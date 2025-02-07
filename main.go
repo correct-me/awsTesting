@@ -9,6 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
+const bucketName = "testbucketcorrectme"
+
 func main() {
 	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
@@ -17,12 +19,14 @@ func main() {
 
 	client := s3.NewFromConfig(cfg)
 
-	result, err := client.ListBuckets(context.TODO(), &s3.ListBucketsInput{})
+	result, err := client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucketName),
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	for _, bucket := range result.Buckets {
-		log.Printf("bucket=%s creation time=%s", aws.ToString(bucket.Name), bucket.CreationDate.Local().Format("2006-01-02 15:04:05 Monday"))
+	for _, object := range result.Contents {
+		log.Printf("object=%s size=%d Bytes last modified=%s", aws.ToString(object.Key), aws.ToInt64(object.Size), object.LastModified.Local().Format("2006-01-02 15:04:05 Monday"))
 	}
 }
