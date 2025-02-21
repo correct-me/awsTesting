@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
-	"io"
+	"io/ioutil"
 	"log"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -11,31 +11,32 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
+const bucket = "testbucketcorrectme"
+const key = "example.txt"
+
 func main() {
-
-	bucket := "testbucketcorrectme"
-	key := "IMG_5300.MP4"
-
-	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion("us-west-2"))
+	data, err := ioutil.ReadFile("example.txt")
 	if err != nil {
-		log.Fatalf("error while conf s3: %v", err)
+		log.Fatalf("error while reading file: %v", err)
+	}
+
+	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion("ru-central1"))
+	if err != nil {
+		log.Fatalf("error while configuring S3: %v", err)
 	}
 
 	s3Client := s3.NewFromConfig(cfg)
 
-	result, err := s3Client.GetObject(context.TODO(), &s3.GetObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(key),
+	result, err := s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket:      aws.String(bucket),
+		Key:         aws.String(key),
+		Body:        bytes.NewReader(data),
+		ContentType: aws.String("text/plain"),
 	})
 
-	defer result.Body.Close()
-
-	buf := bytes.NewBuffer(nil)
-
-	if _, err := io.Copy(buf, result.Body); err != nil {
-		log.Fatal(err)
+	if err != nil {
+		log.Fatalf("error while sending object to bucket: %v", err)
 	}
 
-	log.Println(string(buf.Bytes()))
-
+	log.Println("object sent successfully, size:", result.Size)
 }
