@@ -3,9 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log"
-	"os"
+	"net/http"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -13,7 +14,6 @@ import (
 )
 
 const bucket = "testbucketcorrectme"
-const key = "2025-02-06 17-28-35.mp4"
 
 func main() {
 	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion("ru-central1"))
@@ -23,61 +23,80 @@ func main() {
 
 	s3Client := s3.NewFromConfig(cfg)
 
-	if err := uploadFileToBucket(s3Client, "media/2025-02-06 17-28-35.mp4"); err != nil {
-		log.Fatal(err)
-	}
+	http.HandleFunc("/upload", uploadVideoHandler(s3Client))
+	http.HandleFunc("/download", downloadVideoHandler(s3Client))
 
-	if err := downloadFileFromBucket(s3Client, "media/2025-02-06 17-28-35_COPY.mp4"); err != nil {
-		log.Fatal(err)
-	}
-
+	log.Println("Server started at :8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-func uploadFileToBucket(client *s3.Client, filepath string) error {
-	data, err := os.ReadFile(filepath)
-	if err != nil {
-		return err
+func uploadVideoHandler(client *s3.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "Error retrieving file from form", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		fileBytes, err := io.ReadAll(file)
+		if err != nil {
+			http.Error(w, "Error reading file", http.StatusInternalServerError)
+			return
+		}
+
+		key := header.Filename
+
+		_, err = client.PutObject(context.TODO(), &s3.PutObjectInput{
+			Bucket:      aws.String(bucket),
+			Key:         aws.String(key),
+			Body:        bytes.NewReader(fileBytes),
+			ContentType: aws.String(header.Header.Get("Content-Type")),
+		})
+		if err != nil {
+			http.Error(w, "Failed to upload file to S3", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("File uploaded successfully"))
 	}
-
-	if _, err := client.PutObject(context.TODO(), &s3.PutObjectInput{
-		Bucket:      aws.String(bucket),
-		Key:         aws.String(key),
-		Body:        bytes.NewReader(data),
-		ContentType: aws.String("text/plain"),
-	}); err != nil {
-		return err
-	}
-
-	log.Println("object sent successfully")
-
-	return nil
 }
 
-func downloadFileFromBucket(client *s3.Client, dir string) error {
-	result, err := client.GetObject(context.TODO(), &s3.GetObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		return err
-	}
+func downloadVideoHandler(client *s3.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			http.Error(w, "Missing key parameter", http.StatusBadRequest)
+			return
+		}
 
-	objectsBytes, err := io.ReadAll(result.Body)
-	if err != nil {
-		return err
-	}
+		result, err := client.GetObject(context.TODO(), &s3.GetObjectInput{
+			Bucket: aws.String(bucket),
+			Key:    aws.String(key),
+		})
+		if err != nil {
+			http.Error(w, "Failed to get file from S3", http.StatusInternalServerError)
+			return
+		}
+		defer result.Body.Close()
 
-	file, err := os.Create(dir)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
+		var contentType string
+		if result.ContentType != nil {
+			contentType = *result.ContentType
+		}
 
-	_, err = file.Write(objectsBytes)
-	if err != nil {
-		return err
-	}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", key))
 
-	log.Printf("successfully downloaded data from %s/%s\n to file %s", bucket, key, dir)
-	return nil
+		if _, err := io.Copy(w, result.Body); err != nil {
+			http.Error(w, "Error streaming file", http.StatusInternalServerError)
+			return
+		}
+	}
 }
