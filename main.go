@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -94,7 +95,13 @@ func downloadVideoHandler(client *s3.Client) http.HandlerFunc {
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", key))
 
-		if _, err := io.Copy(w, result.Body); err != nil {
+		file, err := os.Create("media/new_file.mov")
+		if err != nil {
+			http.Error(w, "Failed create file", http.StatusInternalServerError)
+			return
+		}
+
+		if _, err := io.Copy(file, result.Body); err != nil {
 			http.Error(w, "Error streaming file", http.StatusInternalServerError)
 			return
 		}
