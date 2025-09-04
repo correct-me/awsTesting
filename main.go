@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -15,6 +18,11 @@ import (
 )
 
 const bucket = "testbucketcorrectme"
+
+type presignedURLResponse struct {
+	url       string        `json:"url"`
+	expiresIn time.Duration `json:"expires_in"`
+}
 
 func main() {
 	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion("ru-central1"))
@@ -26,6 +34,7 @@ func main() {
 
 	http.HandleFunc("/upload", uploadVideoHandler(s3Client))
 	http.HandleFunc("/download", downloadVideoHandler(s3Client))
+	http.HandleFunc("/presigned", downloadPresignedHandler(s3Client))
 
 	log.Println("Server started at :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
@@ -66,6 +75,51 @@ func uploadVideoHandler(client *s3.Client) http.HandlerFunc {
 
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("File uploaded successfully"))
+	}
+}
+
+func downloadPresignedHandler(client *s3.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			http.Error(w, "Missing key parameter", http.StatusBadRequest)
+			return
+		}
+
+		expiresSec := int64(86400)
+		if v := r.URL.Query().Get("expires"); v != "" {
+			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+				expiresSec = parsed
+			}
+		}
+		expires := time.Duration(expiresSec) * time.Second
+
+		// inline := r.URL.Query().Get("inline") == "1"
+
+		presigner := s3.NewPresignClient(client, func(o *s3.PresignOptions) {
+			o.Expires = expires
+		})
+
+		getInput := &s3.GetObjectInput{
+			Bucket: aws.String(bucket),
+			Key:    aws.String(key),
+		}
+
+		presignedURL, err := presigner.PresignGetObject(context.TODO(), getInput)
+		if err != nil {
+			log.Printf("Error generating presigned URL: %v", err)
+			http.Error(w, "Failed to generate presigned URL", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		log.Printf("Generated presigned URL: %s", presignedURL.URL)
+
+		_ = json.NewEncoder(w).Encode(presignedURLResponse{
+			url:       presignedURL.URL,
+			expiresIn: expires / time.Second,
+		})
 	}
 }
 
